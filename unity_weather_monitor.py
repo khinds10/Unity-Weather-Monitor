@@ -60,6 +60,7 @@ class UnityWeatherMonitor:
         self.latitude = 47.6062  # Seattle
         self.longitude = -122.3321
         self.location_name = "Default Location"
+        self.zipcode = None  # Store the configured zipcode
         
         # Temperature unit (imperial/celsius)
         self.use_imperial = True  # Default to imperial (Fahrenheit)
@@ -146,7 +147,12 @@ class UnityWeatherMonitor:
         self.current_item.set_sensitive(False)
         self.menu.append(self.current_item)
         
-        # Separator
+        # Empty line after current weather
+        empty_item = self.create_monospace_menu_item("")
+        empty_item.set_sensitive(False)
+        self.menu.append(empty_item)
+        
+        # Separator after current weather
         self.menu.append(Gtk.SeparatorMenuItem())
         
         # 15-day forecast items
@@ -159,7 +165,7 @@ class UnityWeatherMonitor:
             self.forecast_items.append(item)
             self.menu.append(item)
         
-        # Separator
+        # Separator before preferences
         self.menu.append(Gtk.SeparatorMenuItem())
         
         # Preferences submenu
@@ -202,6 +208,12 @@ class UnityWeatherMonitor:
         
         interval_item.set_submenu(interval_submenu)
         prefs_submenu.append(interval_item)
+        
+        # Location configuration
+        location_item = Gtk.MenuItem(label="Set Location (Zipcode)")
+        location_item.connect("activate", self.show_location_dialog)
+        prefs_submenu.append(location_item)
+        
         prefs_item.set_submenu(prefs_submenu)
         self.menu.append(prefs_item)
         
@@ -259,8 +271,56 @@ class UnityWeatherMonitor:
         """Convert Celsius to Fahrenheit"""
         return (celsius * 9/5) + 32
     
+    def get_location_from_zipcode(self, zipcode):
+        """Get location coordinates based on zipcode"""
+        try:
+            # Use OpenStreetMap Nominatim API for geocoding
+            url = "https://nominatim.openstreetmap.org/search"
+            params = {
+                "postalcode": zipcode,
+                "format": "json",
+                "limit": 1
+            }
+            
+            response = requests.get(url, params=params)
+            if response.status_code != 200:
+                print(f"Failed to get location data: {response.status_code}")
+                return False
+                
+            data = response.json()
+            if not data:
+                print(f"No location found for zipcode: {zipcode}")
+                return False
+                
+            self.latitude = float(data[0]["lat"])
+            self.longitude = float(data[0]["lon"])
+            
+            # Get location name
+            location_parts = []
+            if "city" in data[0]:
+                location_parts.append(data[0]["city"])
+            elif "town" in data[0]:
+                location_parts.append(data[0]["town"])
+            if "state" in data[0]:
+                location_parts.append(data[0]["state"])
+            if "country" in data[0]:
+                location_parts.append(data[0]["country"])
+                
+            self.location_name = ", ".join(location_parts) if location_parts else f"Zipcode {zipcode}"
+            self.zipcode = zipcode
+            
+            print(f"Location set: {self.location_name} ({self.latitude}, {self.longitude})")
+            return True
+        except Exception as e:
+            print(f"Error getting location from zipcode: {e}")
+            return False
+    
     def get_location_from_ip(self):
         """Get location coordinates based on IP address"""
+        # Skip IP-based location if zipcode is configured
+        if self.zipcode:
+            return False
+            
         try:
             # Use ipinfo.io to get location from IP (free tier)
             response = requests.get("https://ipinfo.io/json")
@@ -498,7 +558,10 @@ class UnityWeatherMonitor:
     def update_weather_loop(self):
         """Background thread to update weather data"""
         # First try to get location from IP
-        self.get_location_from_ip()
+        if not self.get_location_from_ip():
+            # If IP location fails and we have a zipcode, try that
+            if self.zipcode:
+                self.get_location_from_zipcode(self.zipcode)
         
         while self.running:
             if self.update_weather_data():
@@ -512,8 +575,11 @@ class UnityWeatherMonitor:
     
     def refresh_weather(self, widget=None):
         """Manually refresh weather data"""
-        # Try to update location first
-        self.get_location_from_ip()
+        # Try IP-based location first
+        if not self.get_location_from_ip():
+            # If IP location fails and we have a zipcode, try that
+            if self.zipcode:
+                self.get_location_from_zipcode(self.zipcode)
         
         if self.update_weather_data():
             GLib.idle_add(self.update_weather_ui)
@@ -522,6 +588,52 @@ class UnityWeatherMonitor:
         """Handle quit event"""
         self.running = False
         Gtk.main_quit()
+    
+    def show_location_dialog(self, widget):
+        """Show dialog for entering zipcode"""
+        dialog = Gtk.Dialog(
+            title="Set Location by Zipcode",
+            parent=None,
+            flags=Gtk.DialogFlags.MODAL,
+            buttons=("OK", Gtk.ResponseType.OK, "Cancel", Gtk.ResponseType.CANCEL)
+        )
+        
+        # Set dialog size
+        dialog.set_default_size(300, 100)
+        
+        # Create content area
+        content_area = dialog.get_content_area()
+        
+        # Create zipcode entry
+        zipcode_entry = Gtk.Entry()
+        zipcode_entry.set_placeholder_text("Enter your zipcode (e.g., 98101)")
+        zipcode_entry.set_margin_start(20)
+        zipcode_entry.set_margin_end(20)
+        zipcode_entry.set_margin_top(20)
+        zipcode_entry.set_margin_bottom(20)
+        
+        # Make the entry larger
+        zipcode_entry.set_size_request(200, 40)
+        
+        if self.zipcode:
+            zipcode_entry.set_text(self.zipcode)
+        
+        # Add entry to dialog
+        content_area.pack_start(zipcode_entry, True, True, 0)
+        content_area.show_all()
+        
+        # Show dialog and get response
+        response = dialog.run()
+        
+        if response == Gtk.ResponseType.OK:
+            zipcode = zipcode_entry.get_text().strip()
+            if zipcode:
+                if self.get_location_from_zipcode(zipcode):
+                    # Update weather data with new location
+                    if self.update_weather_data():
+                        GLib.idle_add(self.update_weather_ui)
+        
+        dialog.destroy()
 
 if __name__ == "__main__":
     # Handle Ctrl+C
