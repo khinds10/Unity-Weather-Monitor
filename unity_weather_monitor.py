@@ -18,7 +18,7 @@ Features:
 License: MIT License
 Copyright (c) 2024
 
-Version: 1.0.0
+Version: 1.0.1
 Author: Kevin Hinds
 GitHub: https://github.com/khinds10/Unity-Weather-Monitor
 """
